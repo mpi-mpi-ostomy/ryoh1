@@ -149,11 +149,12 @@ label.f.wide{grid-column:1/-1}
 .bon{display:flex;align-items:center;gap:4px;font-weight:700;color:var(--ink);cursor:pointer}
 .bon input{width:18px;height:18px;accent-color:var(--accent)}
 pre.ocrtext{white-space:pre-wrap;font-size:12px;margin:6px 0 0;padding:8px;background:var(--sunken);border-radius:6px}
-@media (max-width:520px){.brow{grid-template-columns:56px minmax(0,1fr)}.bthumb img,.bthumb .thumb{width:56px;height:76px}}
+/* スマホでは写真の縮小表示を小さくして、区分の欄（最長「非課税（パーキング手数料等）」）が切れない幅を確保する */
+@media (max-width:520px){.brow{grid-template-columns:44px minmax(0,1fr);gap:10px;padding:10px 8px}.bthumb img,.bthumb .thumb{width:44px;height:60px}}
 
 /* PDF 用の用紙（紙なので固定の明るい色） */
 #paper{position:fixed;left:-10000px;top:0;width:794px;background:#fff;color:#111;font-family:var(--f-body)}
-.pg{width:794px;height:1123px;padding:42px 46px;background:#fff;color:#111;display:flex;flex-direction:column;gap:10px;font-size:11px}
+.pg{width:794px;min-height:1123px;padding:42px 46px;background:#fff;color:#111;display:flex;flex-direction:column;gap:10px;font-size:11px}
 .pg h1{font-family:var(--f-display);text-align:center;font-size:22px;letter-spacing:.4em;margin:0 0 4px}
 .pg-head{display:flex;align-items:flex-end;justify-content:space-between;border-bottom:2px solid #009CD1;padding-bottom:6px}
 .pg-head img{height:22px;width:auto}
@@ -171,7 +172,7 @@ pre.ocrtext{white-space:pre-wrap;font-size:12px;margin:6px 0 0;padding:8px;backg
 .pg .sum td{font-size:13px;font-weight:700;text-align:right;font-family:var(--f-num)}
 .pg .apv{display:flex;justify-content:flex-end;margin-top:auto}
 .pg .apv table{width:auto}
-.pg .apv td{width:96px;height:86px}
+.pg .apv td{width:76px;height:62px}
 </style>
 </head>
 <body>
@@ -717,10 +718,10 @@ function openBatch(c, files){
         <div class="bst"><label class="bon"><input type="checkbox" data-on ${r.on ? "checked" : ""} ${dis} ${r.dup ? "disabled" : ""}> 追加する</label>${r.part ? `<span class="chip">同じ写真の ${r.part} 枚目</span>` : ""}<span class="stat">${statusText(r)}</span></div>
         ${r.dup ? `<div class="err-text"><b>${esc(r.dup)}</b></div>` : ""}
         ${r.warn ? `<div class="err-text">${esc(r.warn)}</div>` : ""}
-        <div class="grid3">
+        <div class="grid">
           <label class="f">日付<input type="date" data-f="date" value="${r.v.date}" ${dis}></label>
           <label class="f">金額（円）<input type="number" inputmode="numeric" min="0" data-f="amount" value="${r.v.amount}" ${dis}></label>
-          <label class="f">区分<select data-f="cat" ${dis}>${catOptions(r.v.cat, true)}</select></label>
+          <label class="f wide">区分<select data-f="cat" ${dis}>${catOptions(r.v.cat, true)}</select></label>
         </div>
         ${r.primary && r.ocrText ? `<details class="hint"><summary style="cursor:pointer">この写真から読み取った文字を見る</summary><pre class="ocrtext">${esc(r.ocrText)}</pre></details>` : ""}
       </div>`;
@@ -902,7 +903,11 @@ async function makePdf(c){
     await Promise.race([Promise.all([...el.querySelectorAll("img")].map(im => im.decode().catch(() => {}))), new Promise(r => setTimeout(r, 1500))]);
     const canvas = await html2canvas(el, {scale:2, backgroundColor:"#ffffff", logging:false});
     const pdf = new window.jspdf.jsPDF({unit:"mm", format:"a4", orientation:"portrait", compress:true});
-    pdf.addImage(canvas.toDataURL("image/jpeg", 0.9), "JPEG", 0, 0, 210, 297);
+    // プリンターの印刷できない余白で端が欠けないよう、四辺に7mmの余白を取り、内容が長くても用紙の内側に収まるよう縮める
+    const M = 7, maxW = 210 - M*2, maxH = 297 - M*2;
+    let w = maxW, h = maxW * canvas.height / canvas.width;
+    if(h > maxH){ h = maxH; w = maxH * canvas.width / canvas.height; }
+    pdf.addImage(canvas.toDataURL("image/jpeg", 0.9), "JPEG", (210 - w) / 2, M, w, h);
     pdf.save(`旅費交通費精算書_${(c.name || "未記入").replace(/[\\/:*?"<>|\s]/g, "")}_${c.start.replaceAll("-", "")}-${c.end.replaceAll("-", "")}.pdf`);
     c.pdfAt = nowIso(); touch(c);
     toast("PDFを保存しました");
