@@ -86,6 +86,14 @@ label.f{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--mu
 label.f.wide{grid-column:1/-1}
 .f input,.f select,.f textarea{border:1px solid var(--line);background:var(--sunken);border-radius:8px;padding:9px 10px;font-size:16px;color:var(--ink);min-width:0;width:100%}
 .f input:focus,.f select:focus,.f textarea:focus{border-color:var(--accent);outline:none;background:var(--surface)}
+/* iPhone の Safari は日付欄に独自の幅と中央寄せを付けて枠からはみ出すので、枠いっぱい・左寄せ・ほかの欄と同じ高さにそろえる */
+.f input,.f select{height:44px;line-height:1.3}
+.f input[type="date"]{-webkit-appearance:none;appearance:none;display:block;max-width:100%;text-align:left;padding-inline:8px 4px}
+.f input[type="date"]::-webkit-calendar-picker-indicator{margin-left:0;padding:0}
+.f input[type="date"]::-webkit-date-and-time-value{text-align:left;margin:0}
+.f select{-webkit-appearance:none;appearance:none;padding-right:28px;text-overflow:ellipsis;
+  background-image:linear-gradient(45deg,transparent 50%,var(--muted) 50%),linear-gradient(135deg,var(--muted) 50%,transparent 50%);
+  background-position:calc(100% - 15px) 50%,calc(100% - 10px) 50%;background-size:5px 5px,5px 5px;background-repeat:no-repeat}
 .hint{font-size:12px;color:var(--muted)}
 .err-text{font-size:13px;color:var(--err)}
 
@@ -229,10 +237,26 @@ const inPeriod = (c,it) => it.date >= c.start && it.date <= c.end;
 // パーキングメーター・パーキングチケット（非課税の手数料）は同じ日・同じ金額で何度も払うことがあるので重複判定しない
 const normPayee = s => (s||"").normalize("NFKC").replace(/[\s・,.、。()（）「」\-‐－]/g, "").toLowerCase();
 const isMeter = v => v.cat==="nt" || /パーキング(メーター|メータ|チケット)|作動手数料|発給手数料/.test((v.payee||"").normalize("NFKC") + (v.note||""));
-const sameReceipt = (a, b) => !isMeter(a) && !isMeter(b) && !!a.date && a.date===b.date && +a.amount>0 && Math.round(+a.amount)===Math.round(+b.amount)
-  && (normPayee(a.payee)===normPayee(b.payee) || !normPayee(a.payee) || !normPayee(b.payee));
-const findDup = (c, v, exceptId) => (c.items||[]).find(i => i.id!==exceptId && sameReceipt(i, v));
-const dupLabel = i => `${md(i.date)}・${i.payee||"支払先未入力"}・${yen(i.amount)}円`;
+// 重複の判定。明細は 日付・金額・区分 だけを表示するが、読み取り時に「手がかり」fp（精算時刻・精算No・支払先・登録番号）を
+// 画面に出さずに持たせ、同じ領収書かどうかを見分ける。
+//   strong: 日付・金額・区分が同じで、時刻か番号も一致 → 同じ領収書を2回取り込んだ → エラー（追加できない）
+//   weak  : 日付・金額・区分が同じだが手がかりが足りず判断できない → 確認のうえ追加できる
+//   null  : 違う、または時刻・番号・支払先・登録番号のどれかが違う（別の領収書）
+// パーキングメーターは同じ日・同じ金額で何度も払うので、weak は出さない（時刻まで一致したときだけエラー）
+function dupLevel(a, b){
+  if(!a.date || a.date!==b.date || !(+a.amount>0) || Math.round(+a.amount)!==Math.round(+b.amount) || a.cat!==b.cat) return null;
+  const A = a.fp || {}, B = b.fp || {}, differ = (x, y) => !!x && !!y && x !== y;
+  if(differ(A.time, B.time) || differ(A.no, B.no) || differ(normPayee(A.payee), normPayee(B.payee)) || differ(A.regNo, B.regNo)) return null;
+  if((A.time && A.time === B.time) || (A.no && A.no === B.no)) return "strong";
+  return isMeter(a) || isMeter(b) ? null : "weak";
+}
+function findDup(c, v, exceptId){
+  let weak = null;
+  for(const i of c.items||[]){ if(i.id === exceptId) continue; const l = dupLevel(i, v);
+    if(l === "strong") return {item:i, level:"strong"}; if(l === "weak" && !weak) weak = {item:i, level:"weak"}; }
+  return weak;
+}
+const dupLabel = i => `${md(i.date)}・${CAT[i.cat]?.label||""}・${yen(i.amount)}円`;
 // 3万円未満の電車・バスは公共交通機関特例の備考を入れる
 const ocrNote = r => (r.cat==="tr" && r.amount && r.amount < 30000) ? `${r.payee||""} 公共交通機関特例適用`.trim() : (r.memo || "");
 
@@ -320,11 +344,15 @@ function renderClaim(c){
     </section>
     <section>
       <h2>明細 <span class="sub">${items.length} 件${outCount?` ／ <span style="color:var(--err)">期間外 ${outCount} 件</span>`:""}</span></h2>
-      <div class="grid">
-        <button class="btn primary big" id="addCam"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 7h3l2-3h6l2 3h3v13H4z"/><circle cx="12" cy="13" r="4"/></svg>領収書を撮影</button>
-        <button class="btn big" id="addFile"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="5" width="14" height="14" rx="1"/><path d="M7 3h14v14"/></svg>写真をまとめて取り込む</button>
-      </div>
-      <div class="hint">日付・金額・支払先・登録番号を端末の中で読み取ります（写真はどこにも送られず、保存もしません）。領収書は<b>暗めの机の上に、重ならないよう間をあけて</b>並べると1回で複数枚（4枚まで推奨）読み取れます。読み取り結果は必ず確認してください。初回だけ準備に30秒〜1分かかります。　<button class="btn link" id="addManual">手入力で追加</button></div>
+      <button class="btn primary big" id="addScan"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3M8 9h8M8 12h8M8 15h5"/></svg>文字をスキャンして追加（おすすめ）</button>
+      <div class="hint">iPhoneの「テキストをスキャン」で領収書の文字を取り込み、日付・金額・支払先・登録番号を自動で入れます。1枚ずつ続けて追加できます。</div>
+      <details class="hint"><summary style="cursor:pointer">写真から読み取る（精度は低め）・手入力</summary>
+        <div class="grid" style="margin-top:8px">
+          <button class="btn" id="addCam">領収書を撮影</button>
+          <button class="btn" id="addFile">写真をまとめて取り込む</button>
+        </div>
+        <p style="margin:6px 0 0">写真からの読み取りは端末の中だけで行います（写真はどこにも送られず、保存もしません）。精度が低いので、結果は必ず確認してください。　<button class="btn link" id="addManual">手入力で追加</button></p>
+      </details>
       <div class="items">
         ${items.length ? items.map(it => itemRow(c,it)).join("") : `<div class="empty"><strong>明細がまだありません</strong>領収書を撮影すると、ここに1件ずつ追加されます。</div>`}
       </div>
@@ -341,6 +369,7 @@ function renderClaim(c){
   bind("#fName", "name", () => { DATA.profile.name = c.name; });
   bind("#fDept", "dept", () => { DATA.profile.dept = c.dept; });
   bind("#fStart", "start"); bind("#fEnd", "end"); bind("#fSubmit", "submitDate");
+  $("#addScan").onclick = () => openScan(c);
   $("#addCam").onclick = () => $("#camIn").click();
   $("#addFile").onclick = () => $("#fileIn").click();
   $("#addManual").onclick = () => openItem(c, null);
@@ -354,8 +383,8 @@ function itemRow(c,it){
   const d = pd(it.date), out = !inPeriod(c,it);
   return `<button class="item ${out?"out":""}" data-item="${it.id}">
     <div class="item-main">
-      <span class="t"><span class="dow-${d?.getDay()}">${mdw(it.date)}</span>　${esc(it.payee||"（支払先未入力）")}</span>
-      <span class="m"><span class="cat">${esc(CAT[it.cat]?.label||"")}</span>${esc(it.note||"")}${out?"　※対象期間外":""}</span>
+      <span class="t"><span class="dow-${d?.getDay()}">${mdw(it.date)}</span>　${esc(CAT[it.cat]?.label||"区分未選択")}</span>
+      ${out ? `<span class="m" style="color:var(--err)">※対象期間外</span>` : ""}
     </div>
     <span class="amount" style="font-size:16px">${yen(it.amount)}</span>
   </button>`;
@@ -533,7 +562,8 @@ function datesIn(line){
   const L = line.normalize("NFKC").replace(/\s/g, ""), out = []; let m;
   const re1 = /(20\d{2}|令和\d{1,2}|R\d{1,2})[年\/.\-]?(\d{1,2})[月\/.\-]?(\d{1,2})/g;
   while((m = re1.exec(L))){ const y = /^(令和|R)/.test(m[1]) ? 2018 + parseInt(m[1].replace(/\D/g,"")) : +m[1]; const v = validDate(y, +m[2], +m[3]); if(v) out.push(v); }
-  if(!out.length){ const re2 = /(?:^|[^\d])(\d{2})[\/.\-](\d{1,2})[\/.\-](\d{1,2})(?!\d)/g; while((m = re2.exec(L))){ const v = validDate(2000 + +m[1], +m[2], +m[3]); if(v) out.push(v); } }
+  // 「26-10-02 13:21」のような2桁の年。空白で時刻とくっつかないよう、空白を残した行で探す
+  if(!out.length){ const S2 = line.normalize("NFKC"), re2 = /(?:^|[^\d])(\d{2})[\/.\-](\d{1,2})[\/.\-](\d{1,2})(?!\d)/g; while((m = re2.exec(S2))){ const v = validDate(2000 + +m[1], +m[2], +m[3]); if(v) out.push(v); } }
   if(!out.length){ const re3 = /(\d{1,2})月(\d{1,2})日/g; while((m = re3.exec(L))){ const v = validDate(null, +m[1], +m[2]); if(v) out.push(v); } }
   // 区切りの「/」が 7・1・l に化けた日付（例: 2026/10706 → 2026/10/06）
   if(!out.length){ const re4 = /(20\d{2})[\/.](\d{1,2})[71l|](\d{2})(?!\d)/g; while((m = re4.exec(L))){ const v = validDate(+m[1], +m[2], +m[3]); if(v) out.push(v); } }
@@ -542,19 +572,27 @@ function datesIn(line){
 const BRANDS = [["タイムズ","タイムズ"],["Times","タイムズ"],["リパーク","三井のリパーク"],["NPC","NPC24H"],["名鉄協商","名鉄協商パーキング"],["パーク24","タイムズ"],
   ["エコロパーク","エコロパーク"],["ナビパーク","ナビパーク"],["コインパーク","コインパーク"],["アップルパーク","アップルパーク"],["パーキングメーター","パーキングメーター"],["パーキングチケット","パーキングチケット"],
   ["JR東日本","JR東日本"],["JR東海","JR東海"],["JR西日本","JR西日本"],["東京メトロ","東京メトロ"],["都営","都営交通"],["交通局","交通局"],["NEXCO","NEXCO"],["タクシー","タクシー"]];
-const STOP = /領収|レシート|receipt|様|日付|日時|No\.?|TEL|電話|〒|登録番号|ありがとう|毎度|お預|釣|合計|小計|税|^\W*$/i;
+// 支払先に使わない行（見出し・時刻・金額・お礼など）
+const STOP = /領収|レシート|receipt|様|日付|日時|時刻|時間|No\.?|TEL|電話|〒|登録番号|ありがとう|毎度|お預|釣|合計|小計|税|精算|発券|入庫|出庫|料金|金額|現金|車両|気をつけ|受領/i;
+const isNameLine = x => !STOP.test(x) && (x.match(/[぀-ヿ一-鿿]/g) || []).length >= 2 && !datesIn(x).length && !/\d{2,}-\d{2,}/.test(x);
 function parseReceipt(part){
   const raw = part.text || "", lines = raw.split(/\n+/).map(s => s.trim()).filter(Boolean);
   // 区分の判定用: 「パーキング・メーター」の中黒や、パ→バ の読み違いを吸収する
   const all = raw.normalize("NFKC").replace(/[・･\s]/g, "").replace(/バーキング/g, "パーキング");
   // 日付: 出庫 > 精算・支払 > 領収・発行 > その他 > 入庫・乗車 の順に優先
   const pri = l => /出庫|出場/.test(l) ? 1 : /精算|支払|利用日/.test(l) ? 2 : /領収|発行|日付|日時/.test(l) ? 3 : /入庫|入場|乗車/.test(l) ? 5 : 4;
-  let bestDate = "", bestP = 9, inDate = "", outDate = "";
+  let bestDate = "", bestP = 9, inDate = "", outDate = "", bestLine = "";
   for(const l of lines){ const ds = datesIn(l); if(!ds.length) continue; const p = pri(l.normalize("NFKC"));
     const d = ds.sort().pop(); if(p === 1) outDate = d; if(p === 5) inDate = d;
-    if(p < bestP || (p === bestP && d > bestDate)){ bestP = p; bestDate = d; } }
+    if(p < bestP || (p === bestP && d > bestDate)){ bestP = p; bestDate = d; bestLine = l; } }
+  // 重複の見分け用の手がかり: 採用した日付の行の時刻（例 17:30／17時30分）と、精算No・発券No などの番号
+  const tm = bestLine.normalize("NFKC").match(/(?:^|[^\d])(\d{1,2})\s*[:時]\s*(\d{2})/);   // 空白は残す（「26-10-02 13:21」で日付と時刻がくっつかないように）
+  const time = tm ? `${pad(+tm[1])}:${tm[2]}` : "";
+  const noLine = lines.map(x => x.normalize("NFKC")).find(x => /精算\s*No|精算番号/i.test(x)) || lines.map(x => x.normalize("NFKC")).find(x => /No[.:]?\s*\d{3,}/i.test(x)) || "";
+  const nm = noLine.match(/No[.:]?\s*[:：]?\s*0*(\d{2,})/i);
+  const rno = nm ? nm[1] : "";
   // 金額: 「合計・領収金額・お支払」の行 > 「料金・手数料・運賃・金額」の行 > ¥や円が付いた数字。お預り・お釣り・税の行は使わない
-  const K1 = /合計|領収金額|お支払|支払金額|ご利用金額|請求/, K2 = /料金|駐車料|手数料|運賃|金額|代金|小計/, EX = /預|釣|おつり|税|対象|ポイント|残高|番号|TEL|電話|No/;
+  const K1 = /合計|領収金額|お支払|支払金額|ご利用金額|請求/, K2 = /料金|駐車料|手数料|運賃|金額|代金|小計/, EX = /預|釣|おつり|内税|消費税|税額|税抜|対象|ポイント|残高|番号|TEL|電話|No/;   // 「合計(税込10%)」の行は除かない
   let amount = null, score = 0;
   for(const l0 of lines){
     const l = normLine(l0); if(EX.test(l)) continue;
@@ -583,8 +621,20 @@ function parseReceipt(part){
   if(rm){ const d = fixDigits(rm[1]).replace(/\D/g, ""); if(d.length === 13) regNo = "T" + d; }
   // 支払先: よく使う事業者名 > 先頭付近の店名らしい行
   let payee = "";
-  for(const [k, name] of BRANDS){ const l = lines.find(x => x.normalize("NFKC").includes(k)); if(l){ const t = normLine(l).replace(/\s*(¥|\d{2,4}[\/年.]\d|\d{1,2}月|TEL|Tel|tel|電話|〒).*$/, "").trim(); payee = t.length >= name.length && t.length <= 24 ? t : name; break; } }
-  if(!payee){ const l = lines.find(x => !STOP.test(x) && (x.match(/[぀-ヿ一-鿿]/g) || []).length >= 2 && !datesIn(x).length); if(l) payee = l.normalize("NFKC").slice(0, 24); }
+  for(const [k, name] of BRANDS){
+    const i = lines.findIndex(x => x.normalize("NFKC").includes(k)); if(i < 0) continue;
+    const t = normLine(lines[i]).replace(/\s*(¥|\d{2,4}[\/年.]\d|\d{1,2}月|TEL|Tel|tel|電話|〒|登録番号).*$/, "").trim();
+    payee = t.length >= name.length && t.length <= 24 && /[぀-ヿ一-鿿]/.test(t) ? t : name;
+    // ロゴだけの行（例: Times）のときは、すぐ下の施設名を付ける（例: タイムズ 東京都済生会中央病院(第2)）
+    if(payee === name && lines[i+1] && isNameLine(lines[i+1])) payee = `${name} ${lines[i+1].normalize("NFKC").trim()}`.slice(0, 30);
+    break;
+  }
+  if(!payee){
+    // 先頭付近の店名・施設名らしい行。2行続くとき（例: 昭和医科大学／江東豊洲病院）はつなげる
+    const i = lines.findIndex(isNameLine);
+    if(i >= 0){ const a = lines[i].normalize("NFKC").trim(), b = lines[i+1] && isNameLine(lines[i+1]) ? lines[i+1].normalize("NFKC").trim() : "";
+      payee = (b && (a + b).length <= 24 ? `${a} ${b}` : a).slice(0, 30); }
+  }
   // 区分
   let cat;
   if(/パーキングメータ|パーキングチケット|メーター作動|作動手数料|発給手数料|徴収事務/.test(all)) cat = "nt";
@@ -593,7 +643,7 @@ function parseReceipt(part){
   else cat = regNo ? "ot_r" : "ot_n";
   const memo = inDate && outDate && inDate !== outDate ? `入庫 ${md(inDate)} 〜 出庫 ${md(outDate)}` : "";
   const confidence = bestDate && amount && score >= 2 ? "high" : "low";
-  return {date: bestDate, amount: amount || "", payee, regNo, cat, memo, confidence};
+  return {date: bestDate, amount: amount || "", payee, regNo, cat, memo, confidence, fp: {time, no: rno, payee, regNo}};
 }
 
 /* ---------- 取り込み画面（撮影・まとめて取り込み） ---------- */
@@ -629,15 +679,12 @@ function openBatch(c, files){
       <div class="bthumb">${r.thumb ? `<img src="${r.thumb}" alt="領収書" data-zoom>` : `<div class="thumb">${r.st==="bad"?"×":"…"}</div>`}</div>
       <div class="bbody">
         <div class="bst"><label class="bon"><input type="checkbox" data-on ${r.on?"checked":""} ${dis} ${r.dup?"disabled":""}> 追加する</label>${r.part?`<span class="chip">同じ写真の ${r.part} 枚目</span>`:""}<span>${stLabel(r)}</span></div>
-        ${r.dup ? `<div class="err-text"><b>${esc(r.dup)}</b><br>読み取り間違いで別の領収書なのに重複と判定された場合は、日付・金額・支払先を直すと追加できるようになります。</div>` : ""}
+        ${r.dup ? `<div class="err-text"><b>${esc(r.dup)}</b><br>読み取り間違いで別の領収書なのに重複と判定された場合は、日付・金額・区分を直すと追加できるようになります。</div>` : ""}
         ${r.warn ? `<div class="err-text">${r.warn}</div>` : ""}
         <div class="grid3">
           <label class="f">日付<input type="date" data-f="date" value="${r.v.date}" ${dis}></label>
           <label class="f">金額（円）<input type="number" inputmode="numeric" min="0" data-f="amount" value="${r.v.amount}" ${dis}></label>
           <label class="f">区分<select data-f="cat" ${dis}><option value="">選択</option>${CATS.map(x=>`<option value="${x.k}" ${x.k===r.v.cat?"selected":""}>${x.label}</option>`).join("")}</select></label>
-          <label class="f">支払先<input data-f="payee" value="${esc(r.v.payee)}" ${dis}></label>
-          <label class="f">登録番号<input data-f="regNo" value="${esc(r.v.regNo)}" placeholder="T＋13桁" ${dis}></label>
-          <label class="f">備考<input data-f="note" value="${esc(r.v.note)}" ${dis}></label>
         </div>
         ${r.primary && r.ocrText ? `<details class="hint"><summary style="cursor:pointer">この写真から読み取った文字を見る</summary><pre class="ocrtext">${esc(r.ocrText)}</pre></details>` : ""}
       </div>`;
@@ -655,16 +702,21 @@ function openBatch(c, files){
     q("#bAdd").textContent = `${n}件を追加する`;
     q("#bAdd").disabled = done < nPhotos || !n;
   };
-  // 期間外は警告（チェックを外すだけ）。重複はエラー（追加できない）
+  // 期間外・重複の可能性は警告（初期状態でチェックを外すだけ。入れ直せば追加できる）。
+  // 時刻・番号まで一致する重複はエラー（同じ領収書を2回取り込んだので追加できない）
   const check = r => {
-    r.warn = r.v.date && !(r.v.date>=c.start && r.v.date<=c.end) ? "精算書の対象期間外の日付です。" : "";
+    const w = [];
+    if(r.v.date && !(r.v.date>=c.start && r.v.date<=c.end)) w.push("精算書の対象期間外の日付です。");
     r.dup = "";
-    if(r.st==="bad" || r.st==="wait" || r.st==="reading") return;
-    const ex = findDup(c, r.v);
-    if(ex){ r.dup = `重複エラー：登録済みの明細（${dupLabel(ex)}）と同じ領収書のため追加できません。`; return; }
-    const idx = rows.indexOf(r);
-    const prev = rows.slice(0, idx).find(o => o.on && !o.dup && o.st!=="bad" && sameReceipt(o.v, r.v));
-    if(prev) r.dup = `重複エラー：この取り込みの ${rows.indexOf(prev)+1} 行目と同じ領収書のため追加できません（同じ領収書を2回撮った可能性）。`;
+    if(!(r.st==="bad" || r.st==="wait" || r.st==="reading")){
+      const ex = findDup(c, r.v);
+      const prev = rows.slice(0, rows.indexOf(r)).filter(o => o.on && !o.dup && o.st!=="bad").map(o => ({o, l: dupLevel(o.v, r.v)})).find(x => x.l);
+      if(ex?.level === "strong") r.dup = `重複エラー：登録済みの明細（${dupLabel(ex.item)}）と同じ領収書です（時刻・番号まで一致）。`;
+      else if(prev?.l === "strong") r.dup = `重複エラー：この取り込みの ${rows.indexOf(prev.o)+1} 行目と同じ領収書です（同じ領収書を2回撮った可能性）。`;
+      else if(ex) w.push(`日付・金額・区分が同じ明細（${dupLabel(ex.item)}）がすでにあります。別の領収書なら「追加する」にチェックを入れてください。`);
+      else if(prev) w.push(`この取り込みの ${rows.indexOf(prev.o)+1} 行目と日付・金額・区分が同じです。別の領収書なら「追加する」にチェックを入れてください。`);
+    }
+    r.warn = w.join(" ");
   };
   const recheckAll = () => {
     for(const r of rows){
@@ -684,7 +736,7 @@ function openBatch(c, files){
   });
   list.addEventListener("change", e => {
     const row = rows.find(r => e.target.closest(`#br-${r.id}`)); if(!row || !e.target.dataset.f) return;
-    if(["date","amount","payee"].includes(e.target.dataset.f)) recheckAll();
+    if(["date","amount","cat"].includes(e.target.dataset.f)) recheckAll();
   });
   list.addEventListener("click", e => { const im = e.target.closest("[data-zoom]"); if(im) zoom(im.src); });
 
@@ -699,7 +751,7 @@ function openBatch(c, files){
         if(stopped) return;
         r.ocrText = parts.map((p, k) => (parts.length > 1 ? `【${k+1}枚目】\n` : "") + p.text + (p.extra.length ? `\n（読み直し: ${p.extra.join(" ／ ")}）` : "")).join("\n\n");
         const found = parts.map(parseReceipt);
-        const fill = (row, o) => { row.v = {date:o.date, amount:o.amount, cat:o.cat, payee:o.payee, regNo:o.regNo, note:ocrNote(o)}; row.st = o.confidence==="high" && o.cat ? "ok" : "low"; };
+        const fill = (row, o) => { row.v = {date:o.date, amount:o.amount, cat:o.cat, fp:o.fp}; row.st = o.confidence==="high" && o.cat ? "ok" : "low"; };
         fill(r, found[0]);
         if(found.length > 1){
           r.part = `1/${found.length}`;
@@ -729,15 +781,97 @@ function openBatch(c, files){
     if(!pick.length){ q("#bErr").textContent = "追加できる明細がありません。"; return; }
     const bad = [];
     for(const r of pick){
-      const v = r.v; v.regNo = (v.regNo||"").trim().toUpperCase();
+      const v = r.v;
       const miss = [!v.date&&"日付", !(+v.amount>0)&&"金額", !v.cat&&"区分"].filter(Boolean);
-      if(miss.length) bad.push(`${v.payee||"支払先未入力"}：${miss.join("・")}が未入力`);
-      else if(v.regNo && !/^T\d{13}$/.test(v.regNo)) bad.push(`${v.payee||"支払先未入力"}：登録番号は「T」と13桁の数字です`);
+      if(miss.length) bad.push(`${rows.indexOf(r)+1}行目：${miss.join("・")}が未入力`);
     }
     if(bad.length){ q("#bErr").innerHTML = bad.map(esc).join("<br>"); return; }
-    // 写真は読み取りにだけ使い、保存しない（原本は紙で経理へ提出する運用）
-    c.items = [...(c.items||[]), ...pick.map(r => ({id:uid(), date:r.v.date, amount:Math.round(+r.v.amount), cat:r.v.cat, payee:(r.v.payee||"").trim(), regNo:r.v.regNo, note:(r.v.note||"").trim()}))];
+    // 写真は読み取りにだけ使い、保存しない。明細は PDF の項目に合わせて 日付・金額・区分 だけを保存する
+    c.items = [...(c.items||[]), ...pick.map(r => ({id:uid(), date:r.v.date, amount:Math.round(+r.v.amount), cat:r.v.cat, fp:r.v.fp || {}}))];
     touch(c); m.remove(); renderClaim(c); toast(`${pick.length}件の明細を追加しました`);
+  };
+}
+
+/* ---------- 明細の入力チェック（スキャン・手入力で共通） ---------- */
+// 戻り値 {err, warn}: err は追加できない、warn は確認のうえ追加できる（同じ内容でもう一度押すと追加）
+function itemError(c, v, exceptId){
+  const errs = []; if(!v.date) errs.push("日付"); if(!(v.amount>0)) errs.push("金額"); if(!v.cat) errs.push("区分");
+  if(errs.length) return {err:`${errs.join("・")}を入力してください。`};
+  const d = findDup(c, v, exceptId);
+  if(d?.level === "strong") return {err:`重複エラー：登録済みの明細（${dupLabel(d.item)}）と同じ領収書です（時刻・番号まで一致）。同じ領収書を2回取り込んでいないか確認してください。`};
+  if(d?.level === "weak") return {warn:`確認：日付・金額・区分が同じ明細（${dupLabel(d.item)}）がすでにあります。別の領収書ならもう一度押すと追加します。`};
+  return {};
+}
+const sameVals = (a, b) => !!a && a.date===b.date && +a.amount===+b.amount && a.cat===b.cat;
+// 画面で確認・入力するのは PDF の項目に合わせて 日付・金額・区分 だけ。
+// 支払先・登録番号・備考は読み取った値を裏で持ち（登録番号は区分の「あり／なし」を選ぶのに使い、支払先と備考はPDFの備考欄に入る）、
+// 手入力・修正の画面でだけ備考を直せる
+const catSelect = (id, cat, attr="") => `<select id="${id}" ${attr}><option value="">選択してください</option>${CATS.map(x=>`<option value="${x.k}" ${x.k===cat?"selected":""}>${x.label}</option>`).join("")}</select>`;
+const itemFields = (p, it, withNote) => `
+    <div class="grid">
+      <label class="f">日付<input type="date" id="${p}Date" value="${it.date||""}"></label>
+      <label class="f">金額（円）<input type="number" inputmode="numeric" min="0" step="1" id="${p}Amt" value="${it.amount||""}"></label>
+      <label class="f wide">区分${catSelect(`${p}Cat`, it.cat)}</label>
+      ${withNote ? `<label class="f wide">備考（任意。PDFの備考欄に入ります）<input id="${p}Note" value="${esc(it.note||"")}" placeholder="例：○○病院 訪問"></label>` : ""}
+    </div>`;
+const readFields = (q, p) => ({date:q(`#${p}Date`).value, amount:Math.round(+q(`#${p}Amt`).value), cat:q(`#${p}Cat`).value});
+
+/* ---------- 文字をスキャンして追加（iPhone の「テキストをスキャン」／写真アプリの文字のコピーを使う） ---------- */
+// iPhone 標準の文字認識は端末内の読み取り部品よりずっと正確。取り込んだ文字を決まった規則で項目に分ける
+function openScan(c){
+  let added = 0;
+  const m = modal(`
+    <h3>文字をスキャンして追加</h3>
+    <div class="notice info" style="font-size:13px;line-height:1.7"><b>やり方（iPhone）</b><br>
+      ① 下の枠を<b>タップ</b>します（キーボードが出たら、枠の中をもう一度タップ）<br>
+      ② 出てきたメニューの「<b>テキストをスキャン</b>」を押します（見当たらないときはメニューの「＞」で次を表示。キーボード上のスキャンのボタンでも同じです）<br>
+      ③ 領収書<b>1枚</b>にカメラを向け、文字が黄色い枠で囲まれたら「<b>挿入</b>」を押します<br>
+      <span class="hint">写真アプリで領収書の写真を開き、文字を長押し →「すべてを選択」→「コピー」して、枠に貼り付けても使えます。</span></div>
+    <label class="f">領収書の文字<textarea id="sText" rows="5" placeholder="ここをタップして「テキストをスキャン」"></textarea></label>
+    <div class="ocr" id="sState">文字が入ると、下の項目に自動で入ります。</div>
+    ${itemFields("s", {})}
+    <div class="hint" id="sHint"></div>
+    <div class="err-text" id="sErr"></div>
+    <div class="row end"><button class="btn" id="sClose">閉じる</button><button class="btn primary" id="sAdd">追加して次へ</button></div>`);
+  const q = s => m.querySelector(s);
+  let timer = null, cur = {}, warnFor = null;   // cur: 読み取った値。warnFor: 「重複の可能性」を表示した内容（同じ内容でもう一度押すと追加）
+  const fill = () => {
+    const text = q("#sText").value.trim();
+    if(!text){ cur = {}; q("#sState").className = "ocr"; q("#sState").textContent = "文字が入ると、下の項目に自動で入ります。"; return; }
+    const o = cur = parseReceipt({text, extra:[]});
+    warnFor = null; q("#sAdd").textContent = "追加して次へ"; q("#sErr").textContent = "";
+    q("#sDate").value = o.date || ""; q("#sAmt").value = o.amount || ""; q("#sCat").value = o.cat || "";
+    const miss = [!o.date&&"日付", !o.amount&&"金額"].filter(Boolean);
+    const outP = o.date && !(o.date>=c.start && o.date<=c.end);
+    q("#sState").className = "ocr" + (miss.length || outP ? " low" : "");
+    q("#sState").innerHTML = (miss.length ? `<b>${miss.join("・")}が読み取れませんでした。</b>領収書を見て入力してください。` : "読み取りました。領収書と見比べて確認し、「追加して次へ」を押してください。") + (outP ? "<br><b>精算書の対象期間外の日付です。</b>" : "");
+    hintFor();
+  };
+  const hintFor = () => {
+    const cat = q("#sCat").value, amt = +q("#sAmt").value; let h = "";
+    if((cat==="pk_r"||cat==="ot_r") && !cur.regNo) h = "登録番号（T＋13桁）が読み取れませんでした。領収書に登録番号が載っているか確認し、無ければ「登録番号なし」の区分を選んでください。";
+    if((cat==="pk_n"||cat==="ot_n") && cur.regNo) h = `登録番号（${cur.regNo}）が見つかりました。「登録番号あり」の区分ではないか確認してください。`;
+    q("#sHint").textContent = h;
+  };
+  q("#sText").addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(fill, 250); });
+  ["#sCat","#sAmt"].forEach(s => q(s).addEventListener("input", hintFor));
+  const close = () => { m.remove(); renderClaim(c); if(added) toast(`${added}件の明細を追加しました`); };
+  q("#sClose").onclick = close;
+  m.addEventListener("click", e => { if(e.target === m && added) renderClaim(c); });
+  q("#sAdd").onclick = () => {
+    // 表示・PDFは 日付・金額・区分 だけ。重複の見分け用の手がかり fp は画面に出さずに一緒に保存する
+    const v = {...readFields(q, "s"), fp: cur.fp || {}};
+    const {err, warn} = itemError(c, v, null);
+    if(err){ q("#sErr").textContent = err; warnFor = null; return; }
+    if(warn && !sameVals(warnFor, v)){ q("#sErr").textContent = warn; warnFor = v; q("#sAdd").textContent = "別の領収書として追加"; return; }
+    warnFor = null; q("#sAdd").textContent = "追加して次へ";
+    q("#sErr").textContent = "";
+    c.items = [...(c.items||[]), {id:uid(), ...v}]; touch(c); added++;
+    // 次の領収書に備えて空にする
+    cur = {}; q("#sText").value = ""; ["#sDate","#sAmt"].forEach(s => q(s).value = ""); q("#sCat").value = "";
+    q("#sState").className = "ocr"; q("#sState").innerHTML = `<b>${added}件目を追加しました。</b>続けて次の領収書の文字を入れてください。終わったら「閉じる」を押します。`;
+    q("#sHint").textContent = "";
+    m.querySelector(".sheet-m").scrollTop = 0;
   };
 }
 
@@ -747,14 +881,7 @@ function openItem(c, item){
   const it = item ? {...item} : {id:uid(), date:"", cat:"", amount:"", payee:"", regNo:"", note:""};
   const m = modal(`
     <h3>${isNew ? "明細を追加（手入力）" : "明細を修正"}</h3>
-    <div class="grid">
-      <label class="f">日付<input type="date" id="iDate" value="${it.date}"></label>
-      <label class="f">金額（円）<input type="number" inputmode="numeric" min="0" step="1" id="iAmt" value="${it.amount}"></label>
-      <label class="f wide">区分<select id="iCat"><option value="">選択してください</option>${CATS.map(x=>`<option value="${x.k}" ${x.k===it.cat?"selected":""}>${x.label}</option>`).join("")}</select></label>
-      <label class="f wide">支払先<input id="iPayee" value="${esc(it.payee)}" placeholder="例：タイムズ○○駅前"></label>
-      <label class="f">登録番号<input id="iReg" value="${esc(it.regNo)}" placeholder="T1234567890123"></label>
-      <label class="f">備考<input id="iNote" value="${esc(it.note)}" placeholder="例：○○病院 訪問"></label>
-    </div>
+    ${itemFields("i", it, false)}
     <div class="hint" id="iHint"></div>
     <div class="err-text" id="iErr"></div>
     <div class="row end">
@@ -765,21 +892,20 @@ function openItem(c, item){
   const q = s => m.querySelector(s);
   const hint = () => {
     const cat = q("#iCat").value, amt = +q("#iAmt").value; let h = "";
-    if(cat==="tr" && amt>0 && amt<30000) h = "3万円未満の電車・バスは公共交通機関特例の対象です。備考に支払先名と「公共交通機関特例適用」を書いてください。";
-    if((cat==="pk_r"||cat==="ot_r") && !q("#iReg").value.trim()) h = "「登録番号あり」の区分です。領収書の登録番号（T＋13桁）を入力してください。";
+    if(cat==="pk_r"||cat==="ot_r") h = "領収書に登録番号（T＋13桁）が載っているものは「登録番号あり」、載っていないものは「なし」を選びます。";
     if(cat==="nt") h = "パーキングメーター作動手数料・パーキングチケット発給手数料などはこの区分です。";
     q("#iHint").textContent = h;
   };
-  ["#iCat","#iAmt","#iReg"].forEach(s => q(s).addEventListener("input", hint)); hint();
+  ["#iCat","#iAmt"].forEach(s => q(s).addEventListener("input", hint)); hint();
+  let warnFor = null;   // 「重複の可能性」を表示した内容（同じ内容でもう一度押すと保存）
   q("#iCancel").onclick = () => m.remove();
   if(q("#iDel")) q("#iDel").onclick = () => { c.items = c.items.filter(x => x.id !== it.id); touch(c); m.remove(); renderClaim(c); toast("明細を削除しました"); };
   q("#iSave").onclick = () => {
-    const v = {date:q("#iDate").value, amount:Math.round(+q("#iAmt").value), cat:q("#iCat").value, payee:q("#iPayee").value.trim(), regNo:q("#iReg").value.trim().toUpperCase(), note:q("#iNote").value.trim()};
-    const errs = []; if(!v.date) errs.push("日付"); if(!(v.amount>0)) errs.push("金額"); if(!v.cat) errs.push("区分");
-    if(errs.length){ q("#iErr").textContent = `${errs.join("・")}を入力してください。`; return; }
-    if(v.regNo && !/^T\d{13}$/.test(v.regNo)){ q("#iErr").textContent = "登録番号は「T」と13桁の数字です。"; return; }
-    const ex = findDup(c, v, it.id);
-    if(ex){ q("#iErr").textContent = `重複エラー：登録済みの明細（${dupLabel(ex)}）と同じ領収書のため登録できません。別の領収書の場合は、日付・金額・支払先が正しいか確認してください。`; return; }
+    // 読み取り時の手がかり fp は残す（手入力の明細には無い）
+    const v = {id: it.id, ...readFields(q, "i"), fp: it.fp || {}};
+    const {err, warn} = itemError(c, v, it.id);
+    if(err){ q("#iErr").textContent = err; return; }
+    if(warn && !sameVals(warnFor, v)){ q("#iErr").textContent = warn; warnFor = v; q("#iSave").textContent = "別の領収書として保存"; return; }
     Object.assign(it, v);
     c.items = isNew ? [...(c.items||[]), it] : c.items.map(x => x.id===it.id ? it : x);
     touch(c); m.remove(); renderClaim(c); toast(isNew ? "明細を追加しました" : "明細を保存しました");
@@ -805,7 +931,7 @@ async function makePdf(c){
       const d = pd(c.start); d.setDate(d.getDate()+i); const list = byDate[ymd(d)]||[];
       const sum = Object.fromEntries(CATS.map(x=>[x.k,0])); list.forEach(it => sum[it.cat] += +it.amount||0);
       const rowTotal = Object.values(sum).reduce((a,b)=>a+b,0);
-      const note = list.map(it => it.note || it.payee).filter(Boolean).join("／");
+      const note = "";   // 備考欄は空欄（必要なら印刷後に手書き）
       rows.push(`<tr class="${d.getDay()===6?"sat":d.getDay()===0?"sun":""}"><td class="c">${d.getMonth()+1}/${d.getDate()}</td><td class="c">${DOW[d.getDay()]}</td>${CATS.map(x=>`<td class="r">${sum[x.k]?yen(sum[x.k]):""}</td>`).join("")}<td class="r">${rowTotal?yen(rowTotal):""}</td><td class="c cnt">${list.length?list.length+"枚":""}</td><td class="note">${esc(note)}</td></tr>`);
     }
     const cnt = (c.items||[]).length;
